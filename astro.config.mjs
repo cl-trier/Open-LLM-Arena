@@ -6,7 +6,7 @@ import Icons from 'unplugin-icons/vite'
 import svelte from '@astrojs/svelte';
 
 export default defineConfig({
-  site: 'https://simon-muenker.github.io',
+  site: 'https://cl-trier.github.io',
   base: '/Open-LLM-Arena',
 
   vite: {
