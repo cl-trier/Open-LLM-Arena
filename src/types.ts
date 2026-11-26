@@ -1,11 +1,19 @@
+export type Role = "user" | "assistant" | "system";
+
 export interface Message {
-  role: "user" | "assistant" | "system";
+  role: Role;
   content: string;
+  /** Chain-of-thought emitted by reasoning models; displayed but never sent back. */
+  reasoning?: string;
+  /** Set when generation stopped at the token limit. */
+  truncated?: boolean;
 }
+
+export type ConversationStatus = 'idle' | 'loading' | 'streaming' | 'error';
 
 export interface ModelConversation {
   messages: Message[];
-  status: 'idle' | 'loading' | 'error' | 'streaming';
+  status: ConversationStatus;
   error?: string;
 }
 
@@ -28,8 +36,9 @@ export interface Selection {
   persona: string;
 }
 
-export interface Settings {
+// A type alias (not an interface) so it satisfies persistentMap's string-record constraint.
+export type Settings = {
   accessToken: string;
-}
+};
 
 export type ConversationStore = Record<string, ModelConversation>;

@@ -1,17 +1,12 @@
 import { persistentMap } from "@nanostores/persistent";
-import { logger } from "@nanostores/logger";
 
-type Settings = {
-  accessToken: string;
-}
+import type { Settings } from "types";
 
-export const settingsStore = persistentMap<Settings>(
-  "settings:",
-  {
-    accessToken: ""
-  },
-);
-
-logger({
-  settingsStore: settingsStore,
+// Intentionally not passed to devLogger: it holds the access token.
+export const settingsStore = persistentMap<Settings>("settings:", {
+  accessToken: "",
 });
+
+export function setAccessToken(token: string): void {
+  settingsStore.setKey("accessToken", token.trim());
+}

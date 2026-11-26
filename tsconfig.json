@@ -13,7 +13,7 @@
       "@services/*": ["services/*"],
     },
     "types": [
-      "unplugin-icons/types/astro",
+      "unplugin-icons/types/svelte",
     ]
   }
 }

@@ -2,47 +2,58 @@
     import IconCog from '~icons/heroicons/cog-6-tooth';
     import IconCheckCircle from '~icons/heroicons/check-circle';
     import IconExclamationCircle from '~icons/heroicons/exclamation-circle';
+    import IconArrowPath from '~icons/heroicons/arrow-path';
 
-    import { settingsStore } from "@stores/settings";
-    import { updateInferenceToken } from "@services/inference";
+    import { settingsStore, setAccessToken } from "@stores/settings";
+    import { verifyToken } from "@services/inference";
 
-    let accessToken = $state(settingsStore.get().accessToken);
-    let showSettings = $state(false);
-    let tokenStatus: 'idle' | 'valid' | 'invalid' = $state('idle');
+    type TokenStatus = 'idle' | 'checking' | 'valid' | 'invalid';
 
-    function validateToken(token: string): boolean {
-        return token.trim().startsWith('hf_') && token.length > 20;
-    }
+    let accessToken = $state($settingsStore.accessToken);
+    let showSettings = $state(!$settingsStore.accessToken);
+    let tokenStatus: TokenStatus = $state('idle');
+    let tokenMessage = $state('');
 
-    function handleTokenChange() {
-        const isValid = validateToken(accessToken);
-        tokenStatus = isValid ? 'valid' : 'invalid';
-        
-        if (isValid) {
-            settingsStore.setKey("accessToken", accessToken);
-            updateInferenceToken(accessToken);
-        }
-    }
+    const INPUT_STATUS_STYLES: Record<TokenStatus, string> = {
+        idle: '',
+        checking: '',
+        valid: 'border-green-500 bg-green-50',
+        invalid: 'border-red-500 bg-red-50',
+    };
 
-    function handleTokenInput() {
-        if (accessToken.trim() === '') {
-            tokenStatus = 'idle';
-        }
-    }
-
+    // Picks up the token restored from localStorage after hydration and changes made in other tabs.
     $effect(() => {
-        const stored = settingsStore.get().accessToken;
-        if (stored && stored !== accessToken) {
-            accessToken = stored;
-            tokenStatus = validateToken(stored) ? 'valid' : 'idle';
-        }
+        accessToken = $settingsStore.accessToken;
     });
+
+    async function handleTokenChange() {
+        const token = accessToken.trim();
+        setAccessToken(token);
+
+        if (!token) {
+            tokenStatus = 'idle';
+            return;
+        }
+
+        tokenStatus = 'checking';
+        try {
+            const name = await verifyToken(token);
+            if (accessToken.trim() !== token) return; // superseded by a newer input
+            tokenStatus = 'valid';
+            tokenMessage = `Token is valid (account: ${name})`;
+        } catch (error) {
+            if (accessToken.trim() !== token) return;
+            tokenStatus = 'invalid';
+            tokenMessage = error instanceof Error ? error.message : 'Token check failed';
+        }
+    }
 </script>
 
-<div class="mt-12 w-auto max-w-4xl mx-auto">
-    <button 
-        class="w-full flex items-center justify-between p-4 bg-gray-100 rounded-xl shadow-sm hover:shadow-md transition-all"
-        onclick={() => showSettings = !showSettings}
+<div class="mt-12 px-4 w-auto max-w-4xl mx-auto">
+    <button
+        class="w-full flex items-center justify-between p-4 bg-gray-100 rounded-xl shadow-sm hover:shadow-md transition-all cursor-pointer"
+        onclick={() => (showSettings = !showSettings)}
+        aria-expanded={showSettings}
     >
         <div class="flex items-center gap-2">
             <IconCog class="text-2xl text-gray-600" />
@@ -60,44 +71,42 @@
                     <span class="text-red-500">*</span>
                 </label>
                 <div class="relative">
-                    <input 
+                    <input
                         id="api-token"
                         class="w-full px-4 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 pr-10
-                            {tokenStatus === 'valid' ? 'border-green-500 bg-green-50' : ''}
-                            {tokenStatus === 'invalid' ? 'border-red-500 bg-red-50' : ''}" 
-                        type="password" 
-                        placeholder="hf_..." 
+                            {INPUT_STATUS_STYLES[tokenStatus]}"
+                        type="password"
+                        placeholder="hf_..."
+                        autocomplete="off"
                         bind:value={accessToken}
-                        oninput={handleTokenInput}
                         onchange={handleTokenChange}
                     />
-                    <div class="absolute right-3 top-1/2 -translate-y-1/2">
-                        {#if tokenStatus === 'valid'}
-                            <IconCheckCircle class="text-green-500 text-xl" />
+                    <div class="absolute right-3 top-1/2 -translate-y-1/2 text-xl">
+                        {#if tokenStatus === 'checking'}
+                            <IconArrowPath class="text-blue-500 animate-spin" />
+                        {:else if tokenStatus === 'valid'}
+                            <IconCheckCircle class="text-green-500" />
                         {:else if tokenStatus === 'invalid'}
-                            <IconExclamationCircle class="text-red-500 text-xl" />
+                            <IconExclamationCircle class="text-red-500" />
                         {/if}
                     </div>
                 </div>
                 <div class="mt-2 space-y-1">
                     <p class="text-xs text-gray-600">
-                        Get your token from 
-                        <a 
-                            href="https://huggingface.co/settings/tokens" 
-                            target="_blank" 
+                        Create a token with the "Make calls to Inference Providers" permission in your
+                        <a
+                            href="https://huggingface.co/settings/tokens"
+                            target="_blank"
+                            rel="noopener noreferrer"
                             class="text-emerald-600 hover:underline"
                         >
                             Hugging Face Settings
                         </a>
                     </p>
                     {#if tokenStatus === 'invalid'}
-                        <p class="text-xs text-red-600">
-                            Invalid token format. Token should start with 'hf_'
-                        </p>
+                        <p class="text-xs text-red-600">{tokenMessage}</p>
                     {:else if tokenStatus === 'valid'}
-                        <p class="text-xs text-green-600">
-                            ✓ Token format is valid
-                        </p>
+                        <p class="text-xs text-green-600">✓ {tokenMessage}</p>
                     {/if}
                 </div>
             </div>
@@ -115,7 +124,7 @@
 
             <!-- Privacy Notice -->
             <div class="text-xs text-gray-500 italic">
-                Note: All conversations and settings are stored locally in your browser. 
+                Note: All conversations and settings are stored locally in your browser.
                 No data is sent to external servers except API requests to Hugging Face.
             </div>
         </div>

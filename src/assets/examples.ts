@@ -8,7 +8,7 @@ export const EXAMPLES = [
         message: 'Explain the research field of Natural Language Processing.',
     },
     {
-        label: 'discuss AI risks ',
+        label: 'discuss AI risks',
         message: 'Discuss the risk of generative AI on society.',
     }
 

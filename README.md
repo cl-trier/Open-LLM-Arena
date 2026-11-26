@@ -1,46 +1,38 @@
-# Astro Starter Kit: Basics
+# Open LLM Arena
+
+Compare open-weight large language models side by side. Pick models and a persona, send one prompt, and watch every model stream its answer in parallel — including the reasoning of thinking models.
+
+**Live:** https://simon-muenker.github.io/Open-LLM-Arena
+
+## How it works
+
+- Runs entirely in the browser (static Astro site with Svelte islands, deployed to GitHub Pages).
+- Requests go directly from the browser to [Hugging Face Inference Providers](https://huggingface.co/docs/inference-providers) using your own access token — create one with the *Make calls to Inference Providers* permission at https://huggingface.co/settings/tokens.
+- Token, selection, and conversations are stored only in your browser's `localStorage`.
+- On load, the app checks which configured models are currently served by a provider and flags unavailable ones.
+
+## Development
 
 ```sh
-npm create astro@latest -- --template basics
+npm install
+npm run dev      # http://localhost:4321/Open-LLM-Arena
+npm run check    # type-check Astro, Svelte and TypeScript
+npm run build    # production build in ./dist
+npm run preview  # serve the production build
 ```
 
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro project, you'll see the following folders and files:
+## Project structure
 
 ```text
-/
-├── public/
-│   └── favicon.svg
-├── src
-│   ├── assets
-│   │   └── astro.svg
-│   ├── components
-│   │   └── Welcome.astro
-│   ├── layouts
-│   │   └── Layout.astro
-│   └── pages
-│       └── index.astro
-└── package.json
+src/
+├── assets/      # models, personas, example prompts (plain data)
+├── components/  # Svelte islands: ChatSetup, ChatMessages, ChatControl, Settings
+├── layouts/     # page shell, header, footer
+├── services/    # Hugging Face API access, sanitized markdown rendering
+├── stores/      # nanostores state (persisted to localStorage)
+└── types.ts
 ```
 
-To learn more about the folder structure of an Astro project, refer to [our guide on project structure](https://docs.astro.build/en/basics/project-structure/).
+### Adding or replacing a model
 
-## 🧞 Commands
-
-All commands are run from the root of the project, from a terminal:
-
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
-
-## 👀 Want to learn more?
-
-Feel free to check [our documentation](https://docs.astro.build) or jump into our [Discord server](https://astro.build/chat).
+Edit [`src/assets/models.ts`](src/assets/models.ts). A model must be listed with a live provider at https://router.huggingface.co/v1/models, otherwise it is shown as *currently unavailable*. Selections of removed models are dropped automatically on the next visit.

@@ -1,194 +1,172 @@
 import { atom, computed } from "nanostores";
-import { persistentAtom } from "@nanostores/persistent";
-import { logger } from "@nanostores/logger";
 
-import type { Message, ConversationStore, ModelConversation } from "types";
+import type { Message, ConversationStore, ConversationStatus, ModelConversation } from "types";
 
-import { getInferenceService } from "@services/inference";
+import { streamChat, describeError, type StreamResult } from "@services/inference";
 
 import { settingsStore } from "@stores/settings";
 import { selectionStore } from "@stores/selection";
+import { persistentJSON, devLogger } from "@stores/persistent";
 
 import { PERSONAS } from "@assets/personas";
 
-export const conversationsStore = persistentAtom<ConversationStore>(
+export const ACTIVE_STATUSES: ReadonlySet<ConversationStatus> = new Set(["loading", "streaming"]);
+
+const emptyConversation = (): ModelConversation => ({ messages: [], status: "idle" });
+
+/** Repairs malformed entries; a generation cannot survive a page reload, so never restore an in-flight status. */
+function normalizeConversations(convs: ConversationStore): ConversationStore {
+  return Object.fromEntries(
+    Object.entries(convs ?? {}).map(([url, conv]) => {
+      if (!Array.isArray(conv?.messages)) return [url, emptyConversation()];
+      return [url, ACTIVE_STATUSES.has(conv.status) ? { ...conv, status: "idle" } : conv];
+    })
+  );
+}
+
+export const conversationsStore = persistentJSON<ConversationStore>(
   "conversations:",
   {},
-  {
-    encode: JSON.stringify,
-    decode: JSON.parse,
-  }
+  normalizeConversations
 );
 
-export const isGeneratingStore = atom<boolean>(false);
+/** In-flight responses. Kept out of the persistent store so streaming does not hit localStorage per token. */
+export const draftsStore = atom<Record<string, Message>>({});
 
-export const hasActiveConversationsStore = computed(
-  conversationsStore,
-  (convs) => Object.keys(convs).length > 0
+export const isGeneratingStore = computed(conversationsStore, (convs) =>
+  Object.values(convs).some((conv) => ACTIVE_STATUSES.has(conv.status))
 );
 
-export const anyModelLoadingStore = computed(
-  conversationsStore,
-  (convs) => Object.values(convs).some((conv: ModelConversation) => conv.status === 'loading')
+export const hasMessagesStore = computed(conversationsStore, (convs) =>
+  Object.values(convs).some((conv) => conv.messages.length > 0)
 );
 
-logger({
-  conversations: conversationsStore,
-});
+devLogger({ conversationsStore });
 
-export function initializeConversations(): void {
-  const selectedModels = selectionStore.get().models;
-  const currentConvs = conversationsStore.get();
-  const newConvs: ConversationStore = {};
-
-  selectedModels.forEach(modelUrl => {
-
-    newConvs[modelUrl] = currentConvs[modelUrl] || {
-      messages: [],
-      status: 'idle'
-    };
-  });
-
-  conversationsStore.set(newConvs);
+/** One conversation per selected model, in selection order. */
+function syncWithSelection(models: string[], keepHistory: boolean): void {
+  const current = conversationsStore.get();
+  conversationsStore.set(
+    Object.fromEntries(models.map((url) => [url, (keepHistory && current[url]) || emptyConversation()]))
+  );
 }
 
-selectionStore.subscribe(selection => {
-  const currentConvs = conversationsStore.get();
-  const newConvs: ConversationStore = {};
-
-  selection.models.forEach(modelUrl => {
-    newConvs[modelUrl] = currentConvs[modelUrl] || {
-      messages: [],
-      status: 'idle'
-    };
-  });
-
-  conversationsStore.set(newConvs);
-});
+selectionStore.subscribe(({ models }) => syncWithSelection(models, true));
 
 export function clearMessages(): void {
-  const selectedModels = selectionStore.get().models;
-  const newConvs: ConversationStore = {};
-
-  selectedModels.forEach(modelUrl => {
-    newConvs[modelUrl] = {
-      messages: [],
-      status: 'idle'
-    };
-  });
-
-  conversationsStore.set(newConvs);
+  syncWithSelection(selectionStore.get().models, false);
 }
 
-export async function sendMessage(content: string): Promise<void> {
-  if (!content.trim() || isGeneratingStore.get()) return;
-
-  const userMessage: Message = {
-    role: "user",
-    content: content.trim(),
-  };
-
-  const convs = { ...conversationsStore.get() };
-  Object.keys(convs).forEach(modelUrl => {
-    convs[modelUrl] = {
-      ...convs[modelUrl],
-      messages: [...convs[modelUrl].messages, userMessage],
-      status: 'loading'
-    };
-  });
-
-  conversationsStore.set(convs);
-  isGeneratingStore.set(true);
-
-  await generateResponses();
-  
-  isGeneratingStore.set(false);
-}
-
-async function generateResponses(): Promise<void> {
-  const settings = settingsStore.get();
-  const selection = selectionStore.get();
+function updateConversation(
+  url: string,
+  update: (conv: ModelConversation) => Partial<ModelConversation>
+): void {
   const convs = conversationsStore.get();
+  const conv = convs[url];
+  if (!conv) return; // model was deselected meanwhile
+  conversationsStore.set({ ...convs, [url]: { ...conv, ...update(conv) } });
+}
 
-  if (!settings.accessToken) {
-    updateAllModelsStatus('error', 'Please set your Hugging Face API key');
+function toAssistantMessage({ content, reasoning, truncated }: StreamResult): Message {
+  return {
+    role: "assistant",
+    content: content.trim(),
+    ...(reasoning.trim() && { reasoning: reasoning.trim() }),
+    ...(truncated && { truncated }),
+  };
+}
+
+function setDraft(url: string, draft: Message | null): void {
+  const { [url]: _, ...others } = draftsStore.get();
+  draftsStore.set(draft ? { ...others, [url]: draft } : others);
+}
+
+let abortController: AbortController | null = null;
+
+async function generateFor(url: string, accessToken: string, systemInstruction: string, signal: AbortSignal) {
+  const history = conversationsStore.get()[url]?.messages;
+  if (!history) return;
+
+  updateConversation(url, () => ({ status: "loading", error: undefined }));
+  let partial: StreamResult = { content: "", reasoning: "", truncated: false };
+
+  try {
+    partial = await streamChat(accessToken, url, history, systemInstruction, (update) => {
+      partial = update;
+      setDraft(url, toAssistantMessage(update));
+      if (conversationsStore.get()[url]?.status === "loading") {
+        updateConversation(url, () => ({ status: "streaming" }));
+      }
+    }, signal);
+    updateConversation(url, (conv) => ({
+      status: "idle",
+      messages: [...conv.messages, toAssistantMessage(partial)],
+    }));
+  } catch (error) {
+    const hasOutput = Boolean(partial.content.trim() || partial.reasoning.trim());
+    // Keep whatever was generated before a stop or a mid-stream failure.
+    updateConversation(url, (conv) => ({
+      messages: hasOutput ? [...conv.messages, toAssistantMessage(partial)] : conv.messages,
+      ...(signal.aborted
+        ? { status: "idle" }
+        : { status: "error", error: describeError(error) }),
+    }));
+    if (!signal.aborted) console.error(`Error with model ${url}:`, error);
+  } finally {
+    setDraft(url, null);
+  }
+}
+
+async function generate(urls: string[]): Promise<void> {
+  const { accessToken } = settingsStore.get();
+  if (!accessToken) {
+    urls.forEach((url) =>
+      updateConversation(url, () => ({
+        status: "error",
+        error: "Please add your Hugging Face access token in the settings below.",
+      }))
+    );
     return;
   }
 
-  const service = getInferenceService(settings.accessToken);
-  const persona = PERSONAS.find(p => p.name === selection.persona);
-  const systemInstruction = persona?.instruction || "";
+  const persona = PERSONAS.find((p) => p.name === selectionStore.get().persona);
+  const controller = new AbortController();
+  abortController = controller;
 
-  const inferencePromises = Object.entries(convs).map(async ([modelUrl, conv]) => {
-    try {
-      const response = await service.generateResponse(
-        modelUrl,
-        conv.messages,
-        systemInstruction
-      );
+  await Promise.allSettled(
+    urls.map((url) => generateFor(url, accessToken, persona?.instruction ?? "", controller.signal))
+  );
 
-      // Update this model's conversation
-      updateModelConversation(modelUrl, {
-        messages: [...conv.messages, response],
-        status: 'idle'
-      });
-    } catch (error: any) {
-      console.error(`Error with model ${modelUrl}:`, error);
-      
-      const errorMessage: Message = {
-        role: "assistant",
-        content: `⚠️ ${error.message}`,
-      };
-
-      updateModelConversation(modelUrl, {
-        messages: [...conv.messages, errorMessage],
-        status: 'error',
-        error: error.message
-      });
-    }
-  });
-
-  await Promise.allSettled(inferencePromises);
+  if (abortController === controller) abortController = null;
 }
 
-function updateModelConversation(
-  modelUrl: string,
-  updates: Partial<ConversationStore[string]>
-): void {
-  const convs = conversationsStore.get();
-  conversationsStore.set({
-    ...convs,
-    [modelUrl]: {
-      ...convs[modelUrl],
-      ...updates
-    }
-  });
+export async function sendMessage(content: string): Promise<void> {
+  const text = content.trim();
+  if (!text || isGeneratingStore.get()) return;
+
+  const userMessage: Message = { role: "user", content: text };
+  const urls = Object.keys(conversationsStore.get());
+  urls.forEach((url) => updateConversation(url, (conv) => ({ messages: [...conv.messages, userMessage] })));
+
+  await generate(urls);
 }
 
-function updateAllModelsStatus(status: ConversationStore[string]['status'], error?: string): void {
-  const convs = conversationsStore.get();
-  const updated: ConversationStore = {};
+/** Regenerates a model's answer to the latest user message, discarding any reply after it. */
+export async function retryModel(url: string): Promise<void> {
+  const conv = conversationsStore.get()[url];
+  if (!conv || isGeneratingStore.get()) return;
 
-  Object.entries(convs).forEach(([modelUrl, conv]) => {
-    updated[modelUrl] = {
-      ...conv,
-      status,
-      error
-    };
-  });
+  const lastUserIndex = conv.messages.findLastIndex((m) => m.role === "user");
+  if (lastUserIndex === -1) return;
 
-  conversationsStore.set(updated);
+  updateConversation(url, () => ({ messages: conv.messages.slice(0, lastUserIndex + 1) }));
+  await generate([url]);
 }
 
 export function stopGeneration(): void {
-  const service = getInferenceService(settingsStore.get().accessToken);
-  service.cancelAllRequests();
-  updateAllModelsStatus('idle');
-  isGeneratingStore.set(false);
+  abortController?.abort();
 }
 
 export function exportConversation(): string {
   return JSON.stringify(conversationsStore.get(), null, 2);
 }
-
-initializeConversations();

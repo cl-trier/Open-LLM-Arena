@@ -1,42 +1,37 @@
-import { persistentAtom } from "@nanostores/persistent";
-import { logger } from "@nanostores/logger";
-
 import type { Selection } from "types";
 
-export const selectionStore = persistentAtom<Selection>(
+import { MODELS } from "@assets/models";
+import { PERSONAS } from "@assets/personas";
+
+import { persistentJSON, devLogger } from "@stores/persistent";
+
+const DEFAULT_PERSONA = PERSONAS[0].name;
+
+/** Drops models and personas that no longer exist (e.g. after the model list changed). */
+function normalizeSelection({ models, persona }: Selection): Selection {
+  return {
+    models: MODELS.map((m) => m.url).filter((url) => Array.isArray(models) && models.includes(url)),
+    persona: PERSONAS.some((p) => p.name === persona) ? persona : DEFAULT_PERSONA,
+  };
+}
+
+export const selectionStore = persistentJSON<Selection>(
   "selections:",
-  {
-    models: [],
-    persona: "Base"
-  },
-  {
-    encode: JSON.stringify,
-    decode: JSON.parse,
-  }
+  { models: [], persona: DEFAULT_PERSONA },
+  normalizeSelection
 );
 
-logger({
-  selectionsStore: selectionStore,
-});
+devLogger({ selectionStore });
 
 export function toggleModel(modelUrl: string): void {
   const current = selectionStore.get();
   const models = current.models.includes(modelUrl)
-    ? current.models.filter(m => m !== modelUrl)
+    ? current.models.filter((m) => m !== modelUrl)
     : [...current.models, modelUrl];
-  
-  selectionStore.set({ ...current, models });
+
+  selectionStore.set(normalizeSelection({ ...current, models }));
 }
 
 export function setPersona(personaName: string): void {
-  const current = selectionStore.get();
-  selectionStore.set({ ...current, persona: personaName });
-}
-
-export function isModelSelected(modelUrl: string): boolean {
-  return selectionStore.get().models.includes(modelUrl);
-}
-
-export function getSelectedPersona(): string {
-  return selectionStore.get().persona;
+  selectionStore.set(normalizeSelection({ ...selectionStore.get(), persona: personaName }));
 }

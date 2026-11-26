@@ -3,13 +3,21 @@ import "styles.css";
 
 import Header from "@layouts/partials/Header.astro";
 import Footer from "@layouts/partials/Footer.astro";
+
+const description =
+	"Compare open-weight large language models side by side via Hugging Face Inference Providers.";
 ---
 
 <!doctype html>
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<meta name="description" content={description} />
+		<link
+			rel="icon"
+			href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔️</text></svg>"
+		/>
 
 		<title>Open LLM Arena</title>
 	</head>
